@@ -156,7 +156,7 @@ export class DataFrame {
     summarize() {
         for (let header of this.headers) {
             let initial_value = this.data[0][header];
-            this.summary[header] = {min: initial_value, max: initial_value}
+            this.summary[header] = {min: initial_value, max: initial_value, sum: initial_value, count: 1}
         }
 
         for (let row of this.data) {
@@ -166,7 +166,17 @@ export class DataFrame {
                 } else if (row[header] > this.summary[header].max) {
                     this.summary[header].max = row[header];
                 }
+
+                // Add to sum and increment the count
+                this.summary[header].sum += row[header];
+                this.summary[header].count += 1;
             }
+        }
+
+        // Calculate average for each column
+        for (let header in this.summary) {
+            let { sum, count } = this.summary[header];
+            this.summary[header].average = sum / count; // Calculate average
         }
     }
 

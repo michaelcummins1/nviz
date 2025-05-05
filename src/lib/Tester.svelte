@@ -2,11 +2,14 @@
     import { onMount, tick } from "svelte";
     import { DataFrame } from '$lib/DataFrame';
     import { ProgressRadial } from '@skeletonlabs/skeleton';
-
+    
+    // Network
     export let net: any;
+    // Data in df.summary
     export let df: DataFrame;
     export let targets: Array<string>;
 
+    // Inputs
     let test: Object = {}
     let test_results: Object = {};
     let running_test = false;
@@ -43,7 +46,14 @@
                 test_results[header] = df.filters[header][val];
             }
         }
-        running_test = false
+        running_test = false;
+
+        let averages: { [key: string]: number } = {};
+        for (let header of df.headers) {
+            averages[header] = df.summary[header].average;
+        }
+        // Call the Shapley calculation function
+        calculateShapleyValues(test, averages, net, 500);
     }
 
     function randomize_all() {
@@ -55,6 +65,113 @@
         
         test_model()
     }
+
+    function calculateShapleyValues(
+        inputData: Record<string, number>,
+        avgData: Record<string, number>,
+        model: any,
+        num_samples: number = 100
+    ) {
+        console.log("setosa = 0, versicolor = 1, virginica = 2");
+
+        // --- Normalize input and average data, just like test_model ---
+        let input_df = new DataFrame(df.headers, [inputData]);
+        input_df = df.normalize(input_df);
+
+        let avg_df = new DataFrame(df.headers, [avgData]);
+        avg_df = df.normalize(avg_df);
+
+        for (let target of targets) {
+            input_df.pop(target);
+            avg_df.pop(target);
+        }
+
+        const normalizedInput = input_df.data[0];
+        const normalizedAvg = avg_df.data[0];
+
+        // --- Initialize shapley values ---
+        let shapleyValues: Record<string, number> = {};
+
+        // --- Baseline prediction (actual output from the normalized input) ---
+        let baselinePrediction: number;
+        try {
+            const baselinePredictionObj = model.run(normalizedInput);
+            baselinePrediction = baselinePredictionObj.species;
+
+            if (isNaN(baselinePrediction)) {
+                console.error("Baseline prediction returned NaN!");
+                return;
+            }
+        } catch (err) {
+            console.error("Error during baseline prediction:", err);
+            return;
+        }
+
+        // --- Shapley value computation ---
+        for (let feature in normalizedInput) {
+            let featureShapleyValue = 0;
+
+            for (let j = 0; j < num_samples; j++) {
+                const randomMask = Object.keys(normalizedInput).reduce((mask: Record<string, boolean>, key: string) => {
+                    mask[key] = Math.random() > 0.5;
+                    return mask;
+                }, {});
+
+                const perturbedInput = { ...normalizedInput };
+                perturbedInput[feature] = randomMask[feature] ? normalizedInput[feature] : normalizedAvg[feature];
+
+                if (Object.values(perturbedInput).some(value => isNaN(value))) {
+                    console.warn("Perturbed input contains NaN values. Skipping this perturbation.");
+                    continue;
+                }
+
+                let perturbedPrediction: number;
+                try {
+                    const perturbedPredictionObj = model.run(perturbedInput);
+                    perturbedPrediction = perturbedPredictionObj.species;
+
+                    if (isNaN(perturbedPrediction)) {
+                        console.error(`Perturbed prediction for feature ${feature} returned NaN!`);
+                        continue;
+                    }
+                } catch (err) {
+                    console.error(`Error during perturbed prediction for feature ${feature}:`, err);
+                    return;
+                }
+
+                featureShapleyValue += (baselinePrediction - perturbedPrediction);
+            }
+
+            shapleyValues[feature] = featureShapleyValue / num_samples;
+        }
+
+        // --- Expected prediction (model output from normalized average) ---
+        let expectedPrediction: number;
+        try {
+            const expectedPredictionObj = model.run(normalizedAvg);
+            expectedPrediction = expectedPredictionObj.species;
+
+            if (isNaN(expectedPrediction)) {
+                console.error("Expected prediction returned NaN!");
+                return;
+            }
+        } catch (err) {
+            console.error("Error during expected prediction:", err);
+            return;
+        }
+
+        // --- Logging ---
+        const shapleySum = Object.values(shapleyValues).reduce((a, b) => a + b, 0);
+
+        console.log("Shapley Values: ", shapleyValues);
+        console.log("Expected Prediction: ", expectedPrediction);
+        console.log("Sum of Shapley Values: ", shapleySum);
+        console.log("Expected + Shapley: ", expectedPrediction + shapleySum);
+        console.log("Actual Prediction: ", baselinePrediction);
+
+        return shapleyValues;
+    }
+
 </script>
 
 <div class="flex flex-col h-full justify-center items-center">
